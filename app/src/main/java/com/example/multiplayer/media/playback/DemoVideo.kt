@@ -12,25 +12,25 @@ data class DemoVideo(
 val demoVideos = listOf(
     DemoVideo(
         id = "coins",
-        label = "Coins",
+        label = "Player 1",
         assetPath = "videos/coins_luxar.mp4",
         placement = VideoPlacement(x = 0f, y = 0f, width = 0.495f, height = 0.49f),
     ),
     DemoVideo(
         id = "ortaworld",
-        label = "Orta World",
+        label = "Player 2",
         assetPath = "videos/ortaworld_luxar.mp4",
         placement = VideoPlacement(x = 0.505f, y = 0f, width = 0.495f, height = 0.49f),
     ),
     DemoVideo(
         id = "purple",
-        label = "Purple",
+        label = "Player 3",
         assetPath = "videos/purple_luxar.mp4",
         placement = VideoPlacement(x = 0f, y = 0.51f, width = 0.495f, height = 0.49f),
     ),
     DemoVideo(
         id = "red-squares",
-        label = "Red Squares",
+        label = "Player 4",
         assetPath = "videos/redsquares_luxar.mp4",
         placement = VideoPlacement(x = 0.505f, y = 0.51f, width = 0.495f, height = 0.49f),
     ),

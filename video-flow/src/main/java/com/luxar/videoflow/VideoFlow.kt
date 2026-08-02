@@ -67,6 +67,14 @@ class VideoPlayerHandle internal constructor(
     @MainThread
     fun retry() = engine.retry(id)
 
+    /**
+     * Replaces the current local source in-place while retaining this handle, its view and placement.
+     * A null [playWhenReady] preserves the player's current play/pause intent.
+     */
+    @MainThread
+    fun replaceSource(source: VideoSource, playWhenReady: Boolean? = null) =
+        engine.replaceSource(id, source, playWhenReady)
+
     @MainThread
     fun updatePlacement(placement: VideoPlacement) = engine.updatePlacement(id, placement)
 
@@ -142,6 +150,7 @@ class VideoFlowEngine internal constructor(
     fun play(id: String) {
         checkUsable()
         val slot = requireSlot(id)
+        slot.desiredPlayWhenReady = true
         val runtime = slot.runtime
         if (runtime == null) {
             if (slot.state == VideoPlayerState.ERROR) slot.errorCode = null
@@ -155,7 +164,9 @@ class VideoFlowEngine internal constructor(
     @MainThread
     fun pause(id: String) {
         checkUsable()
-        requireSlot(id).runtime?.player?.playWhenReady = false
+        val slot = requireSlot(id)
+        slot.desiredPlayWhenReady = false
+        slot.runtime?.player?.playWhenReady = false
     }
 
     @MainThread
@@ -168,6 +179,28 @@ class VideoFlowEngine internal constructor(
         slot.state = VideoPlayerState.QUEUED
         notifyChanged(slot)
         startNextIfPossible()
+    }
+
+    @MainThread
+    fun replaceSource(id: String, source: VideoSource, playWhenReady: Boolean? = null) {
+        checkUsable()
+        val slot = requireSlot(id)
+        slot.request = slot.request.copy(source = source)
+        if (playWhenReady != null) slot.desiredPlayWhenReady = playWhenReady
+        slot.errorCode = null
+
+        val runtime = slot.runtime
+        if (runtime == null) {
+            slot.metrics = VideoPlayerMetrics()
+            slot.state = VideoPlayerState.QUEUED
+            notifyChanged(slot)
+            updateCapacityStates()
+            startNextIfPossible()
+        } else {
+            slot.state = VideoPlayerState.PREPARING
+            notifyChanged(slot)
+            runtime.replaceSource(source, slot.desiredPlayWhenReady)
+        }
     }
 
     @MainThread
@@ -269,6 +302,7 @@ class VideoFlowEngine internal constructor(
         val runtime = SlotRuntime(
             context = context,
             request = slot.request,
+            initialPlayWhenReady = slot.desiredPlayWhenReady,
             sampleIntervalMs = config.metricsSampleIntervalMs,
             onState = { state ->
                 if (slots[slot.request.id] !== slot || released) return@SlotRuntime
@@ -339,11 +373,21 @@ class VideoFlowEngine internal constructor(
             containerWidth = container.width,
             containerHeight = container.height,
         )
-        slot.view.layoutParams = FrameLayout.LayoutParams(rect.width, rect.height).apply {
-            leftMargin = rect.left
-            topMargin = rect.top
+        val current = slot.view.layoutParams as? FrameLayout.LayoutParams
+        if (
+            current == null ||
+            current.width != rect.width ||
+            current.height != rect.height ||
+            current.leftMargin != rect.left ||
+            current.topMargin != rect.top
+        ) {
+            slot.view.layoutParams = FrameLayout.LayoutParams(rect.width, rect.height).apply {
+                leftMargin = rect.left
+                topMargin = rect.top
+            }
         }
-        slot.view.translationZ = slot.placement.zIndex.toFloat()
+        val targetZ = slot.placement.zIndex.toFloat()
+        if (slot.view.translationZ != targetZ) slot.view.translationZ = targetZ
     }
 
     private fun reorderViews() {
@@ -365,15 +409,22 @@ class VideoFlowEngine internal constructor(
     }
 
     private data class Slot(
-        val request: VideoRequest,
+        var request: VideoRequest,
         var placement: VideoPlacement,
         val view: VideoSlotView,
         var runtime: SlotRuntime? = null,
         var state: VideoPlayerState = VideoPlayerState.QUEUED,
         var metrics: VideoPlayerMetrics = VideoPlayerMetrics(),
         var errorCode: String? = null,
+        var desiredPlayWhenReady: Boolean = true,
     ) {
-        fun snapshot() = VideoPlayerSnapshot(request.id, state, metrics, errorCode)
+        fun snapshot() = VideoPlayerSnapshot(
+            id = request.id,
+            source = request.source,
+            state = state,
+            metrics = metrics,
+            errorCode = errorCode,
+        )
     }
 }
 
@@ -381,6 +432,7 @@ class VideoFlowEngine internal constructor(
 private class SlotRuntime(
     context: Context,
     request: VideoRequest,
+    private val initialPlayWhenReady: Boolean,
     private val sampleIntervalMs: Long,
     private val onState: (VideoPlayerState) -> Unit,
     private val onMetrics: (VideoPlayerMetrics) -> Unit,
@@ -388,12 +440,13 @@ private class SlotRuntime(
     private val onFailure: (PlaybackException, Boolean) -> Unit,
 ) : Player.Listener, AnalyticsListener {
     private val appContext = context.applicationContext
-    private val sourceByteLength = sourceByteLength(appContext, request.source)
+    private var sourceByteLength = sourceByteLength(appContext, request.source)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var released = false
     private var advancedQueue = false
     private var metrics = VideoPlayerMetrics()
     private var lastRenderedBufferCount = 0
+    private var droppedBufferBaseline = 0
     private var lastSampleRealtimeMs = 0L
 
     val player: ExoPlayer
@@ -435,11 +488,30 @@ private class SlotRuntime(
     }
 
     fun prepare() {
+        player.playWhenReady = initialPlayWhenReady
         player.prepare()
-        player.playWhenReady = true
-        lastRenderedBufferCount = player.videoDecoderCounters?.renderedOutputBufferCount ?: 0
+        val counters = player.videoDecoderCounters
+        lastRenderedBufferCount = counters?.renderedOutputBufferCount ?: 0
+        droppedBufferBaseline = counters?.droppedBufferCount ?: 0
         lastSampleRealtimeMs = SystemClock.elapsedRealtime()
         mainHandler.postDelayed(sampler, sampleIntervalMs)
+    }
+
+    fun replaceSource(source: VideoSource, playWhenReady: Boolean) {
+        check(!released) { "Cannot replace the source of a released player" }
+        sourceByteLength = sourceByteLength(appContext, source)
+        val decoderName = metrics.decoderName
+        metrics = VideoPlayerMetrics(decoderName = decoderName)
+        onMetrics(metrics)
+
+        val counters = player.videoDecoderCounters
+        lastRenderedBufferCount = counters?.renderedOutputBufferCount ?: 0
+        droppedBufferBaseline = counters?.droppedBufferCount ?: 0
+        lastSampleRealtimeMs = SystemClock.elapsedRealtime()
+
+        player.playWhenReady = playWhenReady
+        player.setMediaItem(MediaItem.fromUri(sourceUri(source)), /* resetPosition= */ true)
+        player.prepare()
     }
 
     fun release() {
@@ -500,12 +572,17 @@ private class SlotRuntime(
         counters?.ensureUpdated()
         val renderedCount = counters?.renderedOutputBufferCount ?: lastRenderedBufferCount
         val renderedDelta = (renderedCount - lastRenderedBufferCount).coerceAtLeast(0)
+        val droppedCount = counters?.droppedBufferCount
+        if (droppedCount != null && droppedCount < droppedBufferBaseline) {
+            droppedBufferBaseline = 0
+        }
         val renderedFps = if (elapsedMs > 0) renderedDelta * 1_000f / elapsedMs else metrics.renderedFps
         val format = player.videoFormat
 
         metrics = metrics.copy(
             renderedFps = renderedFps,
-            droppedFrames = counters?.droppedBufferCount ?: metrics.droppedFrames,
+            droppedFrames = droppedCount?.let { (it - droppedBufferBaseline).coerceAtLeast(0) }
+                ?: metrics.droppedFrames,
             bufferedDurationMs = player.totalBufferedDuration.coerceAtLeast(0L),
         ).let { sampled ->
             if (format == null) sampled else sampled.withFormat(format, estimatedBitrate(format))
@@ -616,7 +693,7 @@ private class VideoSlotView(
 
     fun render(snapshot: VideoPlayerSnapshot) {
         if (!showDiagnostics) return
-        title.text = "${request.label}\n${snapshot.state.displayName()}"
+        title.text = "${request.label} · ${snapshot.source.displayName()}\n${snapshot.state.displayName()}"
         diagnostics.text = DiagnosticsFormatter.format(snapshot.metrics)
         if (snapshot.errorCode != null) {
             title.setTextColor(Color.rgb(255, 138, 128))
@@ -688,6 +765,12 @@ private fun sourceUri(source: VideoSource): Uri = when (source) {
     is VideoSource.Asset -> Uri.parse("asset:///${source.path}")
     is VideoSource.FilePath -> Uri.fromFile(File(source.path))
     is VideoSource.ContentUri -> source.uri
+}
+
+private fun VideoSource.displayName(): String = when (this) {
+    is VideoSource.Asset -> path.substringAfterLast('/')
+    is VideoSource.FilePath -> File(path).name
+    is VideoSource.ContentUri -> uri.lastPathSegment ?: "content source"
 }
 
 private fun sourceByteLength(context: Context, source: VideoSource): Long = runCatching {

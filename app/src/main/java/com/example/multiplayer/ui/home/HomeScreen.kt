@@ -11,7 +11,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -29,14 +33,17 @@ import com.example.multiplayer.media.playback.demoVideos
 import com.luxar.videoflow.CoordinateSpace
 import com.luxar.videoflow.VideoFlow
 import com.luxar.videoflow.VideoFlowConfig
+import com.luxar.videoflow.VideoPlayerHandle
 import com.luxar.videoflow.VideoRequest
 import com.luxar.videoflow.VideoSource
+import kotlinx.coroutines.delay
 
 @Composable
 fun HomeScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val videoContainer = remember(context) { FrameLayout(context) }
+    var playerHandles by remember { mutableStateOf<List<VideoPlayerHandle>>(emptyList()) }
 
     DisposableEffect(videoContainer, lifecycleOwner) {
         val flow = VideoFlow.initialize(
@@ -50,7 +57,7 @@ fun HomeScreen() {
                 autoFocusFirstSlot = true,
             ),
         )
-        demoVideos.forEach { video ->
+        playerHandles = demoVideos.map { video ->
             flow.run(
                 VideoRequest(
                     id = video.id,
@@ -63,7 +70,24 @@ fun HomeScreen() {
             )
         }
 
-        onDispose(flow::release)
+        onDispose {
+            playerHandles = emptyList()
+            flow.release()
+        }
+    }
+
+    LaunchedEffect(playerHandles) {
+        if (playerHandles.size != demoVideos.size) return@LaunchedEffect
+
+        var sourceRotation = 0
+        while (true) {
+            delay(SOURCE_ROTATION_INTERVAL_MS)
+            sourceRotation = (sourceRotation + 1) % demoVideos.size
+            playerHandles.forEachIndexed { playerIndex, handle ->
+                val nextVideo = demoVideos[(playerIndex + sourceRotation) % demoVideos.size]
+                handle.replaceSource(VideoSource.Asset(nextVideo.assetPath))
+            }
+        }
     }
 
     Column(
@@ -100,3 +124,5 @@ fun HomeScreen() {
         )
     }
 }
+
+private const val SOURCE_ROTATION_INTERVAL_MS = 6_000L

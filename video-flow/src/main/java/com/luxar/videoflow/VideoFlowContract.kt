@@ -86,6 +86,7 @@ data class VideoPlayerMetrics(
 
 data class VideoPlayerSnapshot(
     val id: String,
+    val source: VideoSource,
     val state: VideoPlayerState,
     val metrics: VideoPlayerMetrics = VideoPlayerMetrics(),
     val errorCode: String? = null,

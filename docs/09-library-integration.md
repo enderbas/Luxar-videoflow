@@ -116,6 +116,7 @@ HTTP sources.
 ```kotlin
 player1.pause()
 player1.play()
+player1.replaceSource(VideoSource.Asset("videos/updated.mp4"))
 player1.updatePlacement(VideoPlacement(100f, 100f, 800f, 450f))
 player1.retry()
 player1.stop()
@@ -123,6 +124,13 @@ player1.stop()
 
 All commands must run on Android's main thread. Player identifiers must be
 unique within one engine.
+
+`replaceSource` keeps the existing handle, player view, SurfaceView, placement,
+z-order, and focus. It swaps the Media3 item in-place, resets per-source
+diagnostics, starts the new local video at zero, and preserves play/pause state
+unless `playWhenReady` is supplied. The transition is asynchronous and may
+briefly show the last frame or black while the new MP4 reaches its first
+decodable frame; it is not a frame-accurate crossfade.
 
 ## Observe state
 

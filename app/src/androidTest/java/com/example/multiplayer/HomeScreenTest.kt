@@ -20,10 +20,10 @@ class HomeScreenTest {
     @Test
     fun homeScreenShowsFourVideoTilesAndInitialFocus() {
         composeRule.onNodeWithText("MultiPlayer TV").assertIsDisplayed()
-        onView(withContentDescription("Coins")).check(matches(isDisplayed()))
-        onView(withContentDescription("Orta World")).check(matches(isDisplayed()))
-        onView(withContentDescription("Purple")).check(matches(isDisplayed()))
-        onView(withContentDescription("Red Squares")).check(matches(isDisplayed()))
+        onView(withContentDescription("Player 1")).check(matches(isDisplayed()))
+        onView(withContentDescription("Player 2")).check(matches(isDisplayed()))
+        onView(withContentDescription("Player 3")).check(matches(isDisplayed()))
+        onView(withContentDescription("Player 4")).check(matches(isDisplayed()))
         onView(withTagValue(`is`("video_slot_coins"))).check(matches(hasFocus()))
     }
 }
