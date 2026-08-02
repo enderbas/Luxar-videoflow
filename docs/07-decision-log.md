@@ -48,7 +48,7 @@ synchronization requirement is violated.
 
 ## D-007: SurfaceView rendering
 
-Decision: use Media3 ContentFrame with SurfaceView.
+Decision: use a library-owned Media3 PlayerView with SurfaceView.
 
 Consequence: efficient video composition takes priority over rounded clipping,
 overlap, scale animation, and transitions.

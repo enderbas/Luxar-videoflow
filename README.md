@@ -1,7 +1,8 @@
-# MultiPlayer TV
+# Video Flow for Android TV
 
-MultiPlayer TV is a TV-only Android application for playing multiple independent
-local MP4 videos on one screen with hardware H.264 decoders.
+This repository provides a reusable Android library for playing multiple
+independent local videos with hardware decoders. It also contains a TV demo app
+that exercises the same public API consumers use.
 
 The application is intentionally narrow:
 
@@ -13,6 +14,15 @@ The application is intentionally narrow:
 - One focused audio source
 - No network playback, synchronization, DRM, or background playback
 
+## Modules
+
+- `video-flow`: reusable Android library; owns the complete video lifecycle
+- `app`: TV demo and device verification host
+
+The library is designed to be included as a Git submodule. See the
+[integration guide](docs/09-library-integration.md) for Gradle setup and the
+`VideoFlow.initialize` / `run` API.
+
 ## Documentation
 
 - [Product requirements](docs/01-product-requirements.md)
@@ -23,6 +33,7 @@ The application is intentionally narrow:
 - [Verification plan](docs/06-verification-plan.md)
 - [Decision log](docs/07-decision-log.md)
 - [Risk register](docs/08-risk-register.md)
+- [Library and Git submodule integration](docs/09-library-integration.md)
 
 ## Media conversion
 
@@ -32,11 +43,11 @@ The WSL converter is located at
 
 ## Status
 
-Phase 0 is complete. A four-player vertical slice is also running on the Android
-TV emulator using four bundled, uncompressed 1280x720 H.264 test assets. Players
-use hardware-only codec selection, sequential preparation, muted audio,
-independent looping, SurfaceView output, short local buffers, and lifecycle
-release.
+The reusable library and four-player vertical slice are running with bundled,
+uncompressed 1280x720 H.264 test assets. The demo declares only sources and
+normalized rectangles; `video-flow` owns hardware-only codec selection,
+decoder budgeting, sequential preparation, muted independent looping,
+SurfaceView output, diagnostics, and lifecycle release/recovery.
 
 The bundled assets are temporary test fixtures. The next implementation phase
 replaces them with the local media library and format validator.

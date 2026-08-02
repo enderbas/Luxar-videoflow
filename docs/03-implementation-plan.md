@@ -3,7 +3,7 @@
 Implementation is divided into vertical phases. Each phase ends with runnable
 or testable behavior.
 
-## Phase 0: Project scaffold
+## Phase 0: Project scaffold and reusable library boundary
 
 Deliverables:
 
@@ -61,7 +61,7 @@ Deliverables:
 
 - PlayerFactory
 - Local MediaItem construction
-- ContentFrame with SurfaceView
+- Library-owned PlayerView with SurfaceView
 - Repeat-one playback
 - Short local buffer policy
 - Lifecycle release and recreation

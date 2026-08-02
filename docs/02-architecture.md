@@ -1,187 +1,110 @@
 # Architecture
 
-## Shape
+## Repository shape
 
-The first version uses one Android application module and package-level
-separation. Additional Gradle modules would add ceremony without improving the
-initial hardware experiment.
+The repository contains a reusable library and a verification application:
 
-    Compose TV screens
-            |
-    MultiPlayerViewModel
-       |             |
-       |       VideoRepository
-       |          |       |
-       |        Room   private files
-       |
-    PlaybackCoordinator
-       |             |
-    CodecBudget   PlayerPool
-                       |
-                  PlayerSlot(s)
-                       |
-              Media3 ContentFrame
-                       |
-                  SurfaceView
+    Host activity or fragment
+              |
+      VideoFlow public API
+              |
+       VideoFlowEngine
+        |     |      |
+    placement |  lifecycle
+              |
+       decoder capacity
+              |
+        player slots
+              |
+     Media3 ExoPlayer(s)
+              |
+     PlayerView / SurfaceView
 
-## Component responsibilities
+The `app` module is intentionally a thin host. It supplies four asset sources
+and four rectangles to `video-flow`; it does not create or control ExoPlayer
+directly. This ensures the demo tests the exact path used by submodule
+consumers.
 
-### AppContainer
+## Public boundary
 
-Creates application-scoped database, repository, media validator, decoder
-discovery, and coordinator factories. No dependency-injection framework is
-needed.
+The library package is `com.luxar.videoflow`. Its public boundary contains:
 
-### VideoRepository
+- `VideoFlow.initialize`: creates a screen-scoped engine.
+- `VideoFlowEngine.run`: registers and starts one video request.
+- `VideoPlayerHandle`: play, pause, retry, move, and stop operations.
+- `VideoSource`: host asset, absolute file path, or `content://` URI.
+- `VideoPlacement`: x, y, width, height, and z-index.
+- `CoordinateSpace`: normalized or reference-canvas coordinates.
+- `VideoPlayerSnapshot`: state, decoder metrics, and error information.
+- `DecoderCapacity`: decoder names and the usable player budget.
 
-- Opens document-picker URIs.
-- Validates media metadata and decoder compatibility.
-- Copies accepted files into filesDir/videos.
-- Persists VideoEntity records.
-- Deletes an app-private copy only after explicit confirmation.
-- Exposes the ordered library as Flow.
+No Media3 type is exposed by the public API. This keeps host projects insulated
+from ExoPlayer configuration and unstable codec APIs.
 
-### MediaContractValidator
+## Engine ownership
 
-Uses MediaExtractor and MediaFormat metadata to verify container tracks,
-video MIME type, profile, level, dimensions, frame rate, and audio format.
-It also checks the selected decoder's size and frame-rate support. Validation
-does not allocate a long-lived decoder.
+One engine belongs to one visible host container and lifecycle. It owns:
 
-### HardwareDecoderDiscovery
+- all player instances and rendering views;
+- hardware-only decoder filtering;
+- the decoder budget (`getMaxSupportedInstances() - reserve`);
+- sequential decoder initialization;
+- runtime capacity backoff after insufficient-resource failures;
+- source URI construction and local file access;
+- looping, audio track policy, and buffer configuration;
+- live FPS, bitrate, resolution, decoder, buffer, and dropped-frame metrics;
+- coordinate scaling and view placement;
+- foreground release and restoration.
 
-- Queries non-secure and non-tunneled AVC decoders.
-- Keeps hardware-accelerated, non-software decoders.
-- Rejects decoders that do not support the canonical format.
-- Selects the first compatible platform-preferred decoder.
-- Exposes name, properties, and advertised maximum.
+The engine must be called on Android's main thread. It validates this at its
+public command boundary.
 
-Media3 unstable codec APIs are isolated in this component and the renderers
-factory so the rest of the application does not depend on them.
+## Coordinates
 
-### CodecBudget
+Normalized coordinates use the container as a 1×1 canvas. A request at
+`(0.5, 0.0)` with size `(0.5, 0.5)` occupies the upper-right quarter.
 
-Calculates the initial limit, tracks confirmed allocations, and lowers the
-runtime limit after a resource-capacity failure. Its state is session-scoped
-and is not persisted across firmware updates or process restarts.
+Reference coordinates scale a fixed design canvas to the real container. For
+example, coordinates from a 1920×1080 design can be used unchanged on a
+1280×720 TV surface.
 
-### PlayerFactory
+PlayerView preserves the video aspect ratio inside the assigned rectangle.
+The rectangle itself scales independently on x and y when the container aspect
+ratio differs from the reference canvas.
 
-Creates identically configured ExoPlayer instances:
+## Decoder allocation
 
-- Exact hardware decoder selector
-- Tunneling disabled
-- SurfaceView output
-- Repeat-one mode
-- Audio track initially disabled
-- Local DefaultDataSource
-- One-to-three-second buffer window
-- Approximately 2 MiB target allocation
-- No back buffer
+1. Query Media3's ordered AVC decoder list.
+2. Keep hardware-accelerated, non-software decoders only.
+3. Read the first platform-preferred decoder's advertised maximum.
+4. Subtract the configured reserve, which defaults to two instances.
+5. Queue requests beyond the resulting runtime limit.
+6. Prepare accepted players one at a time.
+7. If the codec reports insufficient resources, lower the runtime limit to the
+   number of allocations that actually succeeded.
 
-### PlayerPool
+An unknown advertised maximum uses a conservative configurable fallback.
 
-Owns every ExoPlayer. It creates slots lazily and never creates more than the
-current CodecBudget limit. It supports assignment, reassignment, release, and
-state observation.
+## Rendering
 
-### PlaybackCoordinator
-
-Maps wall tile IDs to player slots, applies priority, sequences decoder
-initialization, owns exclusive audio selection, stores in-memory positions,
-and coordinates lifecycle release and restoration.
-
-### MultiPlayerViewModel
-
-Combines repository, wall selection, diagnostics, and playback coordinator
-state into immutable UI models. It contains no ExoPlayer creation code.
-
-## Data model
-
-VideoEntity:
-
-- id: stable generated identifier
-- localFilename: generated app-private filename
-- displayName: user-visible original name
-- orderIndex: library ordering
-- durationMs
-- width
-- height
-- frameRate
-- fileSize
-- importedAt
-
-WallEntry:
-
-- videoId
-- wallOrder
-
-Playback positions remain in memory for version one.
-
-## UI state
-
-TileState:
-
-- Waiting
-- Preparing
-- Playing
-- Paused
-- CapacityLimited
-- InvalidMedia
-- PlaybackError
-
-PlayerSlotState:
-
-- Empty
-- Preparing
-- Ready
-- Releasing
-- Failed
-
-## Allocation flow
-
-1. Compute requested wall IDs.
-2. Clamp the request to the current runtime limit.
-3. Keep existing valid assignments to avoid decoder churn.
-4. Allocate the focused tile first.
-5. Allocate remaining tiles in wall order.
-6. Prepare one new slot at a time.
-7. Continue after decoder initialization is confirmed.
-8. On insufficient resources, release the failed slot and lower the limit.
-9. On file failure, mark only that tile and keep the limit.
-
-## Threading
-
-- ExoPlayer and coordinator commands run on the main application looper.
-- Import copying, metadata extraction, Room, and deletion use Dispatchers.IO.
-- State is exposed through StateFlow.
-- UI observes immutable state with lifecycle awareness.
+Version one uses SurfaceView through Media3 PlayerView. This minimizes GPU
+composition cost and is the preferred path for many simultaneous TV videos.
+Rectangles should normally not overlap. z-index controls Android child order,
+but reliable overlapping video composition will require a future TextureView
+rendering option and a separate performance budget.
 
 ## Lifecycle
 
-Activity ON_START:
+On `ON_STOP`, the engine releases every ExoPlayer and hardware decoder but
+retains requests and placements. On `ON_START`, it rebuilds them sequentially.
+On `ON_DESTROY` or explicit `release()`, it also removes views, requests, and
+listeners.
 
-- Discover or refresh decoder information.
-- Recreate the pool.
-- Restore selected wall entries and in-memory positions.
-- Allocate current wall slots.
+Fragments should pass `viewLifecycleOwner`; activities can pass themselves.
 
-Activity ON_STOP:
+## Errors and observability
 
-- Snapshot positions.
-- Disable audio.
-- Detach surfaces.
-- Release every ExoPlayer and decoder.
-- Allow Ambient Mode.
-
-Process death restores the library and wall selection, but playback restarts
-from zero in version one.
-
-## Error classification
-
-- Invalid media: import rejection, no pool effect.
-- File unavailable or unreadable: tile error, no pool effect.
-- Decoder insufficient resource: reduce runtime capacity.
-- Decoder reclaimed: release affected slot and retry after foreground recovery.
-- Fatal decoder error: isolate tile, record diagnostic information.
-- No compatible hardware decoder: block playback and show device diagnostics.
+Each request is isolated. A file or decode failure affects only its slot.
+Listeners receive immutable snapshots with the current state, error code, and
+metrics. When diagnostics are enabled, the library renders the same information
+inside the player rectangle.

@@ -67,8 +67,7 @@ dependencies {
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.tv.material)
     implementation(libs.tv.foundation)
-    implementation(libs.media3.exoplayer)
-    implementation(libs.media3.ui)
+    implementation(project(":video-flow"))
 
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.compose.ui.test.manifest)

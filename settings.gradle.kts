@@ -19,4 +19,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "MultiPlayerTV"
 include(":app")
-
+include(":video-flow")
