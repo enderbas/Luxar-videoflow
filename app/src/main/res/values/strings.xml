@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MultiPlayer TV</string>
+    <string name="demo_wall_status">4 local assets · hardware-only H.264 · muted</string>
+    <string name="player_waiting">Waiting for decoder</string>
+    <string name="player_preparing">Preparing…</string>
+    <string name="player_playing">Playing</string>
+    <string name="player_paused">Paused</string>
+    <string name="player_error">Playback error</string>
+</resources>
