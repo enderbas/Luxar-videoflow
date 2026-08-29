@@ -47,7 +47,10 @@ The reusable library and four-player vertical slice are running with bundled,
 uncompressed 1280x720 H.264 test assets. The demo declares only sources and
 normalized rectangles; `video-flow` owns hardware-only codec selection,
 decoder budgeting, sequential preparation, muted independent looping,
-SurfaceView output, diagnostics, and lifecycle release/recovery.
+SurfaceView or host-owned OpenGL Surface output, diagnostics, and lifecycle
+release/recovery. External output lets projection-mapping hosts sample decoded
+frames from an external-OES texture without taking decoder ownership away from
+the library.
 
 The bundled assets are temporary test fixtures. The next implementation phase
 replaces them with the local media library and format validator.

@@ -1,6 +1,7 @@
 package com.luxar.videoflow
 
 import android.net.Uri
+import android.view.Surface
 
 sealed interface VideoSource {
     data class Asset(val path: String) : VideoSource {
@@ -34,6 +35,25 @@ sealed interface CoordinateSpace {
     }
 }
 
+/**
+ * Selects where decoded frames are rendered.
+ *
+ * [ManagedView] keeps the original video-flow behavior: the library creates and
+ * positions a SurfaceView inside the container supplied to [VideoFlow.initialize].
+ * [ExternalSurface] lets an OpenGL host own the Surface/SurfaceTexture so decoded
+ * frames can be sampled and projection-mapped. The host retains ownership and
+ * must keep the Surface valid until the player is stopped or its output changes.
+ */
+sealed interface VideoOutput {
+    data object ManagedView : VideoOutput
+
+    class ExternalSurface(val surface: Surface) : VideoOutput {
+        init {
+            require(surface.isValid) { "External video Surface must be valid" }
+        }
+    }
+}
+
 data class VideoPlacement(
     val x: Float,
     val y: Float,
@@ -55,10 +75,15 @@ data class VideoRequest(
     val label: String = id,
     val loop: Boolean = true,
     val muted: Boolean = true,
+    val playbackSpeed: Float = 1f,
+    val output: VideoOutput = VideoOutput.ManagedView,
     val showDiagnostics: Boolean? = null,
 ) {
     init {
         require(id.isNotBlank()) { "Video id must not be blank" }
+        require(playbackSpeed.isFinite() && playbackSpeed in 0.1f..5f) {
+            "Playback speed must be finite and between 0.1 and 5.0"
+        }
     }
 }
 

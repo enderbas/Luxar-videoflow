@@ -47,7 +47,20 @@ object VideoFlow {
         config: VideoFlowConfig = VideoFlowConfig(),
     ): VideoFlowEngine {
         checkMainThread()
-        return VideoFlowEngine(container, lifecycleOwner, config)
+        return VideoFlowEngine(container.context.applicationContext, container, lifecycleOwner, config)
+    }
+
+    /**
+     * Creates a headless engine for requests using [VideoOutput.ExternalSurface].
+     */
+    @MainThread
+    fun initialize(
+        context: Context,
+        lifecycleOwner: LifecycleOwner,
+        config: VideoFlowConfig = VideoFlowConfig(),
+    ): VideoFlowEngine {
+        checkMainThread()
+        return VideoFlowEngine(context.applicationContext, null, lifecycleOwner, config)
     }
 }
 
@@ -75,6 +88,13 @@ class VideoPlayerHandle internal constructor(
     fun replaceSource(source: VideoSource, playWhenReady: Boolean? = null) =
         engine.replaceSource(id, source, playWhenReady)
 
+    /** Rebinds a headless player to a replacement host-owned output Surface. */
+    @MainThread
+    fun replaceOutput(output: VideoOutput.ExternalSurface) = engine.replaceOutput(id, output)
+
+    @MainThread
+    fun setPlaybackSpeed(playbackSpeed: Float) = engine.setPlaybackSpeed(id, playbackSpeed)
+
     @MainThread
     fun updatePlacement(placement: VideoPlacement) = engine.updatePlacement(id, placement)
 
@@ -84,11 +104,11 @@ class VideoPlayerHandle internal constructor(
 
 @OptIn(UnstableApi::class)
 class VideoFlowEngine internal constructor(
-    private val container: FrameLayout,
+    private val context: Context,
+    private val container: FrameLayout?,
     private val lifecycleOwner: LifecycleOwner,
     val config: VideoFlowConfig,
 ) : DefaultLifecycleObserver {
-    private val context = container.context
     private val slots = linkedMapOf<String, Slot>()
     private val listeners = linkedSetOf<VideoFlowListener>()
     private var foreground = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
@@ -105,7 +125,7 @@ class VideoFlowEngine internal constructor(
     init {
         runtimeLimit = decoderCapacity.availablePlayers
         lifecycleOwner.lifecycle.addObserver(this)
-        container.addOnLayoutChangeListener(layoutListener)
+        container?.addOnLayoutChangeListener(layoutListener)
     }
 
     @MainThread
@@ -116,16 +136,26 @@ class VideoFlowEngine internal constructor(
         }
 
         val showDiagnostics = request.showDiagnostics ?: config.showDiagnostics
-        val view = VideoSlotView(context, request, showDiagnostics, config.focusableSlots)
+        val view = when (request.output) {
+            VideoOutput.ManagedView -> VideoSlotView(
+                requireNotNull(container) {
+                    "ManagedView output requires VideoFlow.initialize(container, ...)"
+                }.context,
+                request,
+                showDiagnostics,
+                config.focusableSlots,
+            )
+            is VideoOutput.ExternalSurface -> null
+        }
         val slot = Slot(request, request.placement, view)
         slots[request.id] = slot
-        container.addView(view)
+        if (view != null) container?.addView(view)
         applyPlacement(slot)
         reorderViews()
         updateCapacityStates()
         notifyChanged(slot)
 
-        if (config.autoFocusFirstSlot && slots.size == 1 && config.focusableSlots) {
+        if (view != null && config.autoFocusFirstSlot && slots.size == 1 && config.focusableSlots) {
             view.post { view.requestFocus() }
         }
 
@@ -141,7 +171,7 @@ class VideoFlowEngine internal constructor(
         releaseRuntime(slot)
         slot.state = VideoPlayerState.RELEASED
         notifyChanged(slot)
-        container.removeView(slot.view)
+        slot.view?.let { container?.removeView(it) }
         updateCapacityStates()
         startNextIfPossible()
     }
@@ -204,6 +234,36 @@ class VideoFlowEngine internal constructor(
     }
 
     @MainThread
+    fun replaceOutput(id: String, output: VideoOutput.ExternalSurface) {
+        checkUsable()
+        val slot = requireSlot(id)
+        require(slot.request.output is VideoOutput.ExternalSurface) {
+            "replaceOutput is only supported for ExternalSurface players"
+        }
+        if ((slot.request.output as VideoOutput.ExternalSurface).surface === output.surface) return
+        slot.request = slot.request.copy(output = output)
+        if (preparingSlot === slot) preparingSlot = null
+        releaseRuntime(slot)
+        slot.state = VideoPlayerState.QUEUED
+        slot.errorCode = null
+        notifyChanged(slot)
+        updateCapacityStates()
+        startNextIfPossible()
+    }
+
+    @MainThread
+    fun setPlaybackSpeed(id: String, playbackSpeed: Float) {
+        checkUsable()
+        require(playbackSpeed.isFinite() && playbackSpeed in 0.1f..5f) {
+            "Playback speed must be finite and between 0.1 and 5.0"
+        }
+        val slot = requireSlot(id)
+        if (slot.request.playbackSpeed == playbackSpeed) return
+        slot.request = slot.request.copy(playbackSpeed = playbackSpeed)
+        slot.runtime?.setPlaybackSpeed(playbackSpeed)
+    }
+
+    @MainThread
     fun updatePlacement(id: String, placement: VideoPlacement) {
         checkUsable()
         val slot = requireSlot(id)
@@ -240,12 +300,12 @@ class VideoFlowEngine internal constructor(
         foreground = false
         preparingSlot = null
         lifecycleOwner.lifecycle.removeObserver(this)
-        container.removeOnLayoutChangeListener(layoutListener)
+        container?.removeOnLayoutChangeListener(layoutListener)
         slots.values.forEach { slot ->
             releaseRuntime(slot)
             slot.state = VideoPlayerState.RELEASED
             notifyChanged(slot)
-            container.removeView(slot.view)
+            slot.view?.let { container?.removeView(it) }
         }
         slots.clear()
         listeners.clear()
@@ -303,6 +363,8 @@ class VideoFlowEngine internal constructor(
             context = context,
             request = slot.request,
             initialPlayWhenReady = slot.desiredPlayWhenReady,
+            output = slot.request.output,
+            initialPlaybackSpeed = slot.request.playbackSpeed,
             sampleIntervalMs = config.metricsSampleIntervalMs,
             onState = { state ->
                 if (slots[slot.request.id] !== slot || released) return@SlotRuntime
@@ -335,12 +397,12 @@ class VideoFlowEngine internal constructor(
             },
         )
         slot.runtime = runtime
-        slot.view.bind(runtime.player)
+        slot.view?.bind(runtime.player)
         runtime.prepare()
     }
 
     private fun releaseRuntime(slot: Slot) {
-        slot.view.bind(null)
+        slot.view?.bind(null)
         slot.runtime?.release()
         slot.runtime = null
     }
@@ -367,13 +429,15 @@ class VideoFlowEngine internal constructor(
     }
 
     private fun applyPlacement(slot: Slot) {
+        val targetContainer = container ?: return
+        val targetView = slot.view ?: return
         val rect = PlacementResolver.resolve(
             placement = slot.placement,
             coordinateSpace = config.coordinateSpace,
-            containerWidth = container.width,
-            containerHeight = container.height,
+            containerWidth = targetContainer.width,
+            containerHeight = targetContainer.height,
         )
-        val current = slot.view.layoutParams as? FrameLayout.LayoutParams
+        val current = targetView.layoutParams as? FrameLayout.LayoutParams
         if (
             current == null ||
             current.width != rect.width ||
@@ -381,22 +445,22 @@ class VideoFlowEngine internal constructor(
             current.leftMargin != rect.left ||
             current.topMargin != rect.top
         ) {
-            slot.view.layoutParams = FrameLayout.LayoutParams(rect.width, rect.height).apply {
+            targetView.layoutParams = FrameLayout.LayoutParams(rect.width, rect.height).apply {
                 leftMargin = rect.left
                 topMargin = rect.top
             }
         }
         val targetZ = slot.placement.zIndex.toFloat()
-        if (slot.view.translationZ != targetZ) slot.view.translationZ = targetZ
+        if (targetView.translationZ != targetZ) targetView.translationZ = targetZ
     }
 
     private fun reorderViews() {
-        slots.values.sortedBy { it.placement.zIndex }.forEach { it.view.bringToFront() }
+        slots.values.sortedBy { it.placement.zIndex }.forEach { it.view?.bringToFront() }
     }
 
     private fun notifyChanged(slot: Slot) {
         val snapshot = slot.snapshot()
-        slot.view.render(snapshot)
+        slot.view?.render(snapshot)
         listeners.forEach { it.onPlayerChanged(snapshot) }
     }
 
@@ -411,7 +475,7 @@ class VideoFlowEngine internal constructor(
     private data class Slot(
         var request: VideoRequest,
         var placement: VideoPlacement,
-        val view: VideoSlotView,
+        val view: VideoSlotView?,
         var runtime: SlotRuntime? = null,
         var state: VideoPlayerState = VideoPlayerState.QUEUED,
         var metrics: VideoPlayerMetrics = VideoPlayerMetrics(),
@@ -433,6 +497,8 @@ private class SlotRuntime(
     context: Context,
     request: VideoRequest,
     private val initialPlayWhenReady: Boolean,
+    private val output: VideoOutput,
+    private val initialPlaybackSpeed: Float,
     private val sampleIntervalMs: Long,
     private val onState: (VideoPlayerState) -> Unit,
     private val onMetrics: (VideoPlayerMetrics) -> Unit,
@@ -481,7 +547,11 @@ private class SlotRuntime(
             .apply {
                 repeatMode = if (request.loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
                 volume = if (request.muted) 0f else 1f
+                setPlaybackSpeed(initialPlaybackSpeed)
                 setMediaItem(MediaItem.fromUri(sourceUri(request.source)))
+                if (output is VideoOutput.ExternalSurface) {
+                    setVideoSurface(output.surface)
+                }
                 addListener(this@SlotRuntime)
                 addAnalyticsListener(this@SlotRuntime)
             }
@@ -514,12 +584,18 @@ private class SlotRuntime(
         player.prepare()
     }
 
+    fun setPlaybackSpeed(playbackSpeed: Float) {
+        check(!released) { "Cannot change the speed of a released player" }
+        player.setPlaybackSpeed(playbackSpeed)
+    }
+
     fun release() {
         if (released) return
         released = true
         mainHandler.removeCallbacks(sampler)
         player.removeAnalyticsListener(this)
         player.removeListener(this)
+        if (output is VideoOutput.ExternalSurface) player.clearVideoSurface()
         player.release()
     }
 

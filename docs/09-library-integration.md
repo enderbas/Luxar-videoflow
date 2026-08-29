@@ -100,6 +100,35 @@ val player2 = flow.run(
 )
 ```
 
+## Render into a host-owned OpenGL surface
+
+Projection renderers can initialize video-flow without a managed view container:
+
+```kotlin
+val flow = VideoFlow.initialize(
+    context = context,
+    lifecycleOwner = this,
+    config = VideoFlowConfig(reserveHardwareDecoders = 0),
+)
+
+val player = flow.run(
+    VideoRequest(
+        id = "projection-surface-1",
+        source = VideoSource.Asset("videos/loop.mp4"),
+        placement = VideoPlacement(0f, 0f, 1f, 1f),
+        playbackSpeed = 1f,
+        output = VideoOutput.ExternalSurface(glOwnedSurface),
+    ),
+)
+```
+
+The host owns the external `Surface`, its `SurfaceTexture`, and the OpenGL
+texture. Keep them alive until the player is stopped or rebound. If the GL
+context is recreated, call `player.replaceOutput(...)` with the new Surface.
+Decoded frames remain managed by video-flow; the host calls
+`SurfaceTexture.updateTexImage()` on its GL thread and samples the external-OES
+texture in its shader.
+
 Content-provider sources are also local:
 
 ```kotlin
@@ -118,6 +147,7 @@ player1.pause()
 player1.play()
 player1.replaceSource(VideoSource.Asset("videos/updated.mp4"))
 player1.updatePlacement(VideoPlacement(100f, 100f, 800f, 450f))
+player1.setPlaybackSpeed(1.25f)
 player1.retry()
 player1.stop()
 ```
